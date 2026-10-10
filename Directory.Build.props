@@ -1,0 +1,19 @@
+<Project>
+  <!-- The WDK and SDK come from NuGet (packages.config, restored into
+       packages\ by `nuget restore`), so no installed WDK is needed. Point
+       WdkPackages elsewhere to share one restore between checkouts. -->
+  <PropertyGroup>
+    <WdkVersion>10.0.26100.6584</WdkVersion>
+    <WdkPackages Condition="'$(WdkPackages)' == ''">$(MSBuildThisFileDirectory)packages</WdkPackages>
+  </PropertyGroup>
+  <Import Project="$(WdkPackages)\Microsoft.Windows.WDK.x64.$(WdkVersion)\build\native\Microsoft.Windows.WDK.x64.props" Condition="'$(Platform)' == 'x64'" />
+  <Import Project="$(WdkPackages)\Microsoft.Windows.WDK.arm64.$(WdkVersion)\build\native\Microsoft.Windows.WDK.arm64.props" Condition="'$(Platform)' == 'ARM64'" />
+  <Import Project="$(WdkPackages)\Microsoft.Windows.SDK.CPP.x64.$(WdkVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props" Condition="'$(Platform)' == 'x64'" />
+  <Import Project="$(WdkPackages)\Microsoft.Windows.SDK.CPP.arm64.$(WdkVersion)\build\native\Microsoft.Windows.SDK.cpp.arm64.props" Condition="'$(Platform)' == 'ARM64'" />
+  <Import Project="$(WdkPackages)\Microsoft.Windows.SDK.CPP.$(WdkVersion)\build\native\Microsoft.Windows.SDK.cpp.props" />
+  <PropertyGroup>
+    <WDKContentRoot>$([MSBuild]::EnsureTrailingSlash('$(WDKContentRoot)'))</WDKContentRoot>
+    <WindowsSdkDir>$([MSBuild]::EnsureTrailingSlash('$(WindowsSdkDir)'))</WindowsSdkDir>
+    <WindowsSdkDir_10>$(WindowsSdkDir)</WindowsSdkDir_10>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the WDK and SDK
+        run: nuget restore packages.config -PackagesDirectory packages
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build the driver
+        run: msbuild UConnectVDD.sln -p:Configuration=Release -p:Platform=${{ matrix.platform }} -m -nologo
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.platform == 'x64'
+
+      - name: Build vddctl
+        if: matrix.platform == 'x64'
+        working-directory: tools/vddctl
+        run: cl /nologo /EHsc /O2 /std:c++17 /W3 /D_CRT_SECURE_NO_WARNINGS /I..\..\include vddctl.cpp setupapi.lib newdev.lib dxgi.lib d3d11.lib ole32.lib user32.lib /Fe:vddctl.exe
+
+      - name: Collect the package
+        shell: pwsh
+        run: |
+          $out = "dist/uconnect-vdd-${{ matrix.platform }}"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item "${{ matrix.platform }}/Release/UConnectVDD/*" $out
+          Copy-Item "${{ matrix.platform }}/Release/UConnectVDD.cer" $out
+          Copy-Item LICENSE, README.md $out
+          if ('${{ matrix.platform }}' -eq 'x64') { Copy-Item tools/vddctl/vddctl.exe $out }
+          Get-ChildItem $out | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content "$out/SHA256SUMS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uconnect-vdd-${{ matrix.platform }}
+          path: dist/uconnect-vdd-${{ matrix.platform }}

@@ -36,7 +36,7 @@ namespace Microsoft
 		struct VirtualMonitorMode {
 			DWORD Width;
 			DWORD Height;
-			DWORD VSync;
+			DWORD VSync;  // millihertz
 		};
 
 		/// <summary>
@@ -84,6 +84,8 @@ namespace Microsoft
 			LUID adapterLuid{};
 			UINT targetId = 0;
 			GUID monitorGuid{};
+			// The handle that added this monitor; closing it removes the monitor.
+			WDFFILEOBJECT owner = nullptr;
 
 			uint8_t* pEdidData = nullptr;
 			VirtualMonitorMode preferredMode{};
@@ -100,10 +102,11 @@ namespace Microsoft
 		private:
 			IDDCX_MONITOR m_Monitor;
 			std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
-		} ;
+			Microsoft::WRL::Wrappers::Event m_hCursorEvent;
+		};
 
 		/// <summary>
-		/// Provides a sample implementation of an indirect display driver.
+		/// The virtual display adapter: one per device.
 		/// </summary>
 		class IndirectDeviceContext
 		{
@@ -115,8 +118,10 @@ namespace Microsoft
 
 			void SetRenderAdapter(const LUID& AdapterLuid);
 
-			void _TestCreateMonitor();
-			NTSTATUS CreateMonitor(IndirectMonitorContext*& pMonitorContext, uint8_t* edidData, const GUID& containerId, const VirtualMonitorMode& preferredMode);
+			// Creates and plugs in a monitor owned by `owner`. The connector
+			// slot must already be reserved.
+			NTSTATUS CreateMonitor(IndirectMonitorContext*& pMonitorContext, UINT connector, uint8_t* edidData,
+				const GUID& containerId, const VirtualMonitorMode& preferredMode, WDFFILEOBJECT owner);
 
 		protected:
 			WDFDEVICE m_WdfDevice;

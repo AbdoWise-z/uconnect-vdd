@@ -1,48 +1,99 @@
-# SudoVDA
-Based on Microsoft Indirect Display Driver Sample. This creates a virtual display in Windows that acts and functions just like a real one. It's useful for streaming, virtual reality applications, recording, headless servers, etc. The benefit over a physical display is the ability to adjust resolutions and refresh rates beyond the physical displays capabilities. For example, this would enable the ability to stream a game from your home PC using game streaming software at 240hz at 8K while owning a 60hz 1080p monitor (~~unrealistic,~~ but explains the abilities well). For servers without displays, this enabled remote desktop and screen streaming to other systems as if there were a display installed. 
+# uConnect virtual display driver
 
-Supports emulating resolutions from **640 x 480** to **7680 x 4320 (8K)**, and refresh rates including **60hz, 75hz, 90hz, 120hz, 144hz, 165hz, 240hz, 480hz,** and **500hz.**
+The Windows half of uConnect's **extended display** feature: an indirect
+display driver that gives Windows an extra monitor, which the uConnect app
+captures and streams to another device. Windows sees an ordinary monitor;
+only uConnect drives it.
 
-This project uses the official Windows Indirect Display Driver combined with the IddCx class extension driver. GitHub shows it's a fork of MTT's Virtual Display Driver, but it actually went a full rewrite half way. I keep the fork info for honoring the previous works done by MTT. 
+It is a fork of [SudoVDA](https://github.com/SudoMaker/SudoVDA) (itself
+built on Microsoft's indirect display sample). The fork:
 
-## Notice
+- **Owns monitors by handle.** A monitor belongs to the handle that added it.
+  Closing that handle, or the process ending in any way, removes the monitor
+  at once; a handle that sends nothing for 3 s loses its monitors. A virtual
+  screen never outlives the program using it.
+- **Has its own identity** (`Root\uConnectVDD`, its own interface GUID and
+  registry key), so it installs alongside SudoVDA or Apollo.
+- **Restricts access** to SYSTEM, Administrators and interactive users.
+- **Validates input:** modes within 640×480–7680×4320 and 24–240 Hz, EDID
+  strings bounded, at most 4 monitors per handle, ids unique across handles.
+- **Is SDR by default.** HDR modes are advertised only when the `hdr`
+  registry value is set.
+- **Builds from NuGet**: no installed WDK needed.
 
-HDR is only fully supported on Windows 11 24H2. On 23H2 and lower, you'll try your luck to get the HDR toggle in Windows settings. HDR is not supported on Windows 10.
+## Control interface
 
-## Config
+`include/uconnect-vdd.h` is the whole contract: plain C, the same layout
+under MSVC and MinGW. Open the device interface `UCVDD_INTERFACE_GUID`, then:
 
-In Registry path `\HKEY_LOCAL_MACHINE\SOFTWARE\SudoMaker\SudoVDA` (create one if not exists):
+| IOCTL | in / out | |
+|---|---|---|
+| `IOCTL_UCVDD_GET_VERSION` | – / `UCVDD_VERSION` | protocol version, watchdog, monitor limit |
+| `IOCTL_UCVDD_ADD` | `UCVDD_ADD_PARAMS` / `UCVDD_ADD_RESULT` | add a monitor (id, width, height, refresh in mHz, EDID name and serial); returns the adapter LUID and target id to find it in `QueryDisplayConfig` |
+| `IOCTL_UCVDD_REMOVE` | `UCVDD_REMOVE_PARAMS` / – | remove one of this handle's monitors |
+| `IOCTL_UCVDD_PING` | – / – | keep this handle's monitors alive (send about once a second) |
+| `IOCTL_UCVDD_SET_RENDER_ADAPTER` | `UCVDD_RENDER_ADAPTER_PARAMS` / – | the GPU that renders monitors added afterwards |
 
-- `gpuName`    [STRING]: The friendly name for the GPU which the virtual adapter connects to. Default unset, will choose the card with biggest videoram automatically.
-- `maxMonitors` [DWORD]: Number of maximum virtual monitors can be created. Defaults to 10(decimal).
-- `watchdog`    [DWORD]: Timeout in seconds for the watchdog to bark. Defaults to 3, set 0 to disable watchdog.
-- `sdrBits`     [DWORD]: Bits for SDR mode. Defaults to 8(decimal)/8(HEX), set 10(decimal)/a(HEX) to enable SDR 10 bits, other values are ignored.
-- `hdrBits`     [DWORD]: Bits for HDR mode. Defaults to 10(decimal)/a(HEX), set 12(decimal)/c(HEX) to enable HDR12 bits/HDR+, other values are ignored.
+## Building
 
-**NOTE**: After changing these values, you'll need to reload the driver or reboot your computer for them to take effect. Please note that if the driver is currently opened by something else, for example Apollo, it won't be able to reload, you'll need to quit the application before reloading the driver.
+Requirements: Visual Studio 2022 or later (Build Tools are enough) with the
+MSVC v143 x64 tools, and `nuget.exe`.
+
+```powershell
+nuget restore packages.config -PackagesDirectory packages
+msbuild UConnectVDD.sln -p:Configuration=Release -p:Platform=x64
+```
+
+The output is `x64\Release\UConnectVDD\` (`UConnectVDD.inf`,
+`UConnectVDD.dll`, `uconnectvdd.cat`), test-signed with a certificate the
+WDK generates (`x64\Release\UConnectVDD.cer`).
+
+Without the Spectre-mitigated MSVC libraries installed, add
+`-p:Driver_SpectreMitigation=false`. A Visual Studio without the WDK
+extension may not know the `WindowsUserModeDriver10.0` toolset; CI builds on
+`windows-2025-vs2026`, which does.
+
+`tools\vddctl` is a small test tool (MSVC or MinGW, see the top of
+`vddctl.cpp`).
+
+## Installing for development
+
+From an elevated PowerShell, after building the driver and `vddctl`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\dev-install.ps1
+tools\vddctl\vddctl.exe selftest
+powershell -ExecutionPolicy Bypass -File scripts\dev-uninstall.ps1
+```
+
+`dev-install.ps1` trusts the build's test certificate on this machine, so no
+test-signing mode is needed (this is a user-mode driver); `dev-uninstall.ps1`
+removes the device, the driver package and the certificate.
+
+`vddctl selftest` runs the acceptance checks: validation, adding a monitor
+and finding it, setting its mode, capturing it with desktop duplication,
+ownership between handles, and removal on close, on silence (watchdog) and
+on a killed process.
+
+## Registry settings
+
+`HKLM\SOFTWARE\uConnect\VirtualDisplay`, read when the driver starts:
+
+- `gpuName` (string): the GPU that renders monitors until a client picks one.
+- `maxMonitors` (DWORD, 1–16, default 10).
+- `hdr` (DWORD): 1 advertises HDR modes (Windows 11).
+- `sdrBits` (DWORD): 10 for 10-bit SDR. `hdrBits` (DWORD): 12 for 12-bit HDR.
 
 ## License
 
-MIT and CC0 or Public Domain (for changes I made, please consult Microsoft for their license), choose the least restrictive option.
-
-## Disclaimer:
-
-This software is provided "AS IS" with NO IMPLICIT OR EXPLICIT warranty. It's worth noting that while this software functioned without issues on my system, there is no guarantee that it will not impact your computer. It operates in User Mode, which reduces the likelihood of causing system instability, such as the Blue Screen of Death. However, exercise caution when using this software.
+See [LICENSE](LICENSE): Microsoft's sample code is MS-PL, SudoMaker's changes
+MIT/CC0, uConnect's changes MIT.
 
 ## Acknowledgements
 
-Shoutout to **Roshkins** for the original repo:
-https://github.com/roshkins/IddSampleDriver
-
-Shoutout to **Baloukj** for the 8-bit / 10-bit support. (Also, first to push the new Microsoft Driver public!)
-https://github.com/baloukj/IddSampleDriver
-
-Shoutout to **Anakngtokwa** for assisting with finding driver sources.
-
-**Microsoft** Indirect Display Driver/Sample (Driver code): 
-https://github.com/microsoft/Windows-driver-samples/tree/master/video/IndirectDisplay
-
-Thanks to **AKATrevorJay** https://github.com/akatrevorjay/edid-generator for the hi-res EDID.
-
-Shoutout to **zjoasan** and **Bud** for the helper scripts and build support!
-
+- [SudoVDA](https://github.com/SudoMaker/SudoVDA) by SudoMaker.
+- **MikeTheTech** (Virtual Display Driver), **Roshkins** (IddSampleDriver),
+  **Baloukj** (8/10-bit support), **Anakngtokwa**, **zjoasan** and **Bud**.
+- **Microsoft**: the
+  [indirect display driver sample](https://github.com/microsoft/Windows-driver-samples/tree/main/video/IndirectDisplay).
+- **AKATrevorJay** for the [EDID generator](https://github.com/akatrevorjay/edid-generator).

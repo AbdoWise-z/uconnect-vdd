@@ -18,12 +18,12 @@ Environment:
 //
 // Define the tracing flags.
 //
-// Tracing GUID - b254994f-46e6-4718-80a0-0a3aa50d6ce4
+// Tracing GUID - c759f23e-8d02-495d-9444-c9f53bdbac6e
 //
 
 #define WPP_CONTROL_GUIDS                                              \
     WPP_DEFINE_CONTROL_GUID(                                           \
-        MyDriver1TraceGuid, (b254994f,46e6,4718,80a0,0a3aa50d6ce4),                  \
+        MyDriver1TraceGuid, (c759f23e,8d02,495d,9444,c9f53bdbac6e),                  \
                                                                        \
         WPP_DEFINE_BIT(MYDRIVER_ALL_INFO)                              \
         WPP_DEFINE_BIT(TRACE_DRIVER)                                   \
@@ -59,5 +59,5 @@ Environment:
 //
 #if UMDF_VERSION_MAJOR == 2 && UMDF_VERSION_MINOR == 0
     // TODO: Update the name of the tracing provider
-    #define MYDRIVER_TRACING_ID      L"Microsoft\\UMDF2.0\\IddSampleDriver V1.0"
+    #define MYDRIVER_TRACING_ID      L"Microsoft\\UMDF2.0\\uConnect VDD"
 #endif
