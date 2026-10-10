@@ -22,10 +22,13 @@ jobs:
       - name: Restore the WDK and SDK
         run: nuget restore packages.config -PackagesDirectory packages
 
+      # 64-bit MSBuild and tools: the NuGet WDK's tools are x64 only.
       - uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
 
       - name: Build the driver
-        run: msbuild UConnectVDD.sln -p:Configuration=Release -p:Platform=${{ matrix.platform }} -m -nologo
+        run: msbuild UConnectVDD.sln -p:Configuration=Release -p:Platform=${{ matrix.platform }} -p:PreferredToolArchitecture=x64 -m -nologo
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: matrix.platform == 'x64'
