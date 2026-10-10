@@ -1,0 +1,9 @@
+<Project>
+  <!-- The NuGet WDK ships its tools (stampinf, inf2cat) for x64 hosts only,
+       and the SDK package carries tracewpp and signtool; the WDK's own
+       targets look in the x86 folder. Evaluated after the toolset, so these
+       come first. -->
+  <PropertyGroup>
+    <ExecutablePath>$(WDKBinRoot_x64);$(WdkPackages)\Microsoft.Windows.SDK.CPP.$(WdkVersion)\c\bin\10.0.26100.0\x64;$(ExecutablePath)</ExecutablePath>
+  </PropertyGroup>
+</Project>
