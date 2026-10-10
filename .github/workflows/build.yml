@@ -10,7 +10,8 @@ on:
 jobs:
   build:
     name: ${{ matrix.platform }}
-    runs-on: windows-2025-vs2026
+    # VS 2022: WDK 10.0.26100 ships build tasks for it (VS 2026 needs WDK 28000).
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:

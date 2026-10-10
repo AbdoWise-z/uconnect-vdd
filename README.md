@@ -49,9 +49,10 @@ The output is `x64\Release\UConnectVDD\` (`UConnectVDD.inf`,
 WDK generates (`x64\Release\UConnectVDD.cer`).
 
 Without the Spectre-mitigated MSVC libraries installed, add
-`-p:Driver_SpectreMitigation=false`. A Visual Studio without the WDK
-extension may not know the `WindowsUserModeDriver10.0` toolset; CI builds on
-`windows-2025-vs2026`, which does.
+`-p:Driver_SpectreMitigation=false`. WDK 10.0.26100 supports Visual
+Studio 2022 (CI builds on `windows-2022`); Visual Studio 2026 needs WDK
+10.0.28000. A Visual Studio without the WDK extension does not know the
+`WindowsUserModeDriver10.0` toolset.
 
 `tools\vddctl` is a small test tool (MSVC or MinGW, see the top of
 `vddctl.cpp`).
