@@ -183,13 +183,15 @@ struct Target {
     UINT32 width = 0, height = 0;
 };
 
-std::vector<Target> targets() {
+// Active display paths, or with `all` the inactive ones too.
+std::vector<Target> targets(bool all = false) {
+    const UINT32 flags = all ? QDC_ALL_PATHS : QDC_ONLY_ACTIVE_PATHS;
     std::vector<Target> out;
     UINT32 pathCount = 0, modeCount = 0;
-    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) return out;
+    if (GetDisplayConfigBufferSizes(flags, &pathCount, &modeCount) != ERROR_SUCCESS) return out;
     std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
     std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
-    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) return out;
+    if (QueryDisplayConfig(flags, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) return out;
     for (UINT32 i = 0; i < pathCount; ++i) {
         const auto& path = paths[i];
         Target t;
@@ -220,11 +222,13 @@ const Target* findTarget(const std::vector<Target>& all, const UCVDD_ADD_RESULT&
 }
 
 // Waits until `done` holds, up to `ms`; returns how long it took, or -1.
-long long waitFor(int ms, const std::function<bool()>& done) {
+// Pings `owner` meanwhile, so the driver's watchdog keeps its monitors.
+long long waitFor(int ms, const std::function<bool()>& done, const Driver* owner = nullptr) {
     const auto start = std::chrono::steady_clock::now();
     for (;;) {
         if (done()) return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
         if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(ms)) return -1;
+        if (owner) owner->ping();
         Sleep(50);
     }
 }
@@ -297,15 +301,31 @@ int version() {
     return 0;
 }
 
+// Waits for Windows to turn the new monitor on. With one screen in "PC screen
+// only" (or after "Duplicate") it does not, so after a moment the desktop is
+// extended onto it, as the uConnect app does. Returns the ms it took, or -1.
+long long showMonitor(const Driver& d, const UCVDD_ADD_RESULT& r, std::wstring* gdi = nullptr, bool* extended = nullptr) {
+    const auto active = [&] { auto all = targets(); auto* t = findTarget(all, r); if (t && gdi) *gdi = t->gdiName; return t != nullptr; };
+    if (extended) *extended = false;
+    const auto start = std::chrono::steady_clock::now();
+    if (waitFor(2500, active, &d) < 0) {
+        if (extended) *extended = true;
+        SetDisplayConfig(0, nullptr, 0, nullptr, SDC_TOPOLOGY_EXTEND | SDC_APPLY);
+        if (waitFor(4000, active, &d) < 0) return -1;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+}
+
 int add(int width, int height, int hz, int seconds) {
     Driver d;
     if (!d.ok()) { fwprintf(stderr, L"The driver is not installed or not running.\n"); return 1; }
     const GUID id = newGuid();
     UCVDD_ADD_RESULT r{};
     if (!d.add(params(width, height, hz, id), r)) { fwprintf(stderr, L"Add failed: %ls\n", lastError().c_str()); return 1; }
-    std::wstring gdi;
-    waitFor(5000, [&] { auto all = targets(); auto* t = findTarget(all, r); if (t) gdi = t->gdiName; return t != nullptr; });
-    wprintf(L"Added %ls (target %u); keeping it %d s.\n", gdi.empty() ? L"(not active)" : gdi.c_str(), r.TargetId, seconds);
+    std::wstring gdi; bool extended = false;
+    const auto ms = showMonitor(d, r, &gdi, &extended);
+    wprintf(L"Added %ls (target %u) after %lld ms%ls; keeping it %d s.\n", gdi.empty() ? L"(not active)" : gdi.c_str(),
+        r.TargetId, ms, extended ? L", extending the desktop" : L"", seconds);
     fflush(stdout);
     for (int i = 0; i < seconds; ++i) { Sleep(1000); d.ping(); }
     d.remove(id);
@@ -326,6 +346,7 @@ int crashChild() {
     Driver d;
     UCVDD_ADD_RESULT r{};
     if (!d.ok() || !d.add(params(1280, 720, 60, newGuid(), "crash"), r)) return 1;
+    showMonitor(d, r);
     wprintf(L"%08lX %08lX %u\n", r.AdapterLuid.HighPart, r.AdapterLuid.LowPart, r.TargetId);
     fflush(stdout);
     for (;;) { Sleep(500); d.ping(); }
@@ -341,7 +362,8 @@ int selftest(const wchar_t* self) {
             : lastError(openError));
         if (!d.ok()) return 1;
         UCVDD_VERSION v{};
-        check(d.version(v) && v.Major == UCVDD_PROTOCOL_MAJOR, L"protocol version",
+        const bool versioned = d.version(v);
+        check(versioned && v.Major == UCVDD_PROTOCOL_MAJOR, L"protocol version",
             std::to_wstring(v.Major) + L"." + std::to_wstring(v.Minor));
 
         // Validation.
@@ -355,8 +377,13 @@ int selftest(const wchar_t* self) {
         check(added, L"add 2560x1440@60", added ? L"" : lastError());
         if (added) {
             std::wstring gdi;
-            const auto ms = waitFor(5000, [&] { auto all = targets(); auto* t = findTarget(all, r); if (t) gdi = t->gdiName; return t != nullptr; });
-            check(ms >= 0, L"monitor becomes an active display", ms >= 0 ? gdi + L" after " + std::to_wstring(ms) + L" ms" : L"");
+            bool extended = false;
+            const auto ms = showMonitor(d, r, &gdi, &extended);
+            const auto everything = targets(true);
+            check(ms >= 0, L"monitor becomes an active display", ms >= 0 ? gdi + L" after " + std::to_wstring(ms) + L" ms"
+                    + (extended ? L" (Windows had to be told to extend the desktop)" : L"")
+                : findTarget(everything, r) ? L"Windows knows the monitor but did not turn it on (projection mode?)"
+                : L"Windows has no path to the monitor at all");
             if (ms >= 0) {
                 check(setMode(gdi, 2560, 1440, 60), L"set its mode to 2560x1440@60");
                 std::wstring detail;
@@ -375,28 +402,29 @@ int selftest(const wchar_t* self) {
             }
             check(d.remove(id), L"remove it");
             const auto gone = waitFor(3000, [&] { auto all = targets(); return findTarget(all, r) == nullptr; });
-            check(gone >= 0, L"it leaves the display configuration", std::to_wstring(gone) + L" ms");
+            check(ms >= 0 && gone >= 0, L"it leaves the display configuration", std::to_wstring(gone) + L" ms");
         }
 
         // A handle that closes takes its monitors with it.
         {
             UCVDD_ADD_RESULT r3{};
+            long long shown3 = -1;
             {
                 Driver temp;
                 check(temp.add(params(1920, 1080, 60, newGuid(), "close"), r3), L"add on a second handle");
-                waitFor(5000, [&] { auto all = targets(); return findTarget(all, r3) != nullptr; });
+                shown3 = showMonitor(temp, r3);
             }
             const auto gone = waitFor(3000, [&] { auto all = targets(); return findTarget(all, r3) == nullptr; });
-            check(gone >= 0, L"closing the handle removes its monitor", std::to_wstring(gone) + L" ms");
+            check(shown3 >= 0 && gone >= 0, L"closing the handle removes its monitor", std::to_wstring(gone) + L" ms");
         }
 
         // A silent handle loses its monitors to the watchdog.
         {
             UCVDD_ADD_RESULT r4{};
             check(d.add(params(1920, 1080, 60, newGuid(), "silent"), r4), L"add, then stop pinging");
-            waitFor(5000, [&] { auto all = targets(); return findTarget(all, r4) != nullptr; });
+            const auto shown = showMonitor(d, r4);
             const auto gone = waitFor(UCVDD_WATCHDOG_MS + 3000, [&] { auto all = targets(); return findTarget(all, r4) == nullptr; });
-            check(gone >= 0, L"the watchdog removes a silent owner's monitor", std::to_wstring(gone) + L" ms");
+            check(shown >= 0 && gone >= 0, L"the watchdog removes a silent owner's monitor", std::to_wstring(gone) + L" ms");
         }
     }
 
