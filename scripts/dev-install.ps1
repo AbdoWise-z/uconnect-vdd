@@ -21,7 +21,7 @@ $cert = Join-Path $root "$Platform\$Configuration\UConnectVDD.cer"
 $vddctl = Join-Path $root 'tools\vddctl\vddctl.exe'
 
 foreach ($path in @("$package\UConnectVDD.inf", "$package\uconnectvdd.cat", $cert, $vddctl)) {
-    if (-not (Test-Path $path)) { throw "Missing $path: build the driver and vddctl first." }
+    if (-not (Test-Path $path)) { throw "Missing ${path}: build the driver and vddctl first." }
 }
 
 foreach ($store in 'Root', 'TrustedPublisher') {
