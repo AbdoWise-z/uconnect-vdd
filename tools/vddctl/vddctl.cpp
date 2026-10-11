@@ -334,7 +334,11 @@ int crashChild() {
 int selftest(const wchar_t* self) {
     {
         Driver d;
-        check(d.ok(), L"open the control interface", d.ok() ? L"" : lastError());
+        // No interface at all means no running driver: say so, not a stale error code.
+        const DWORD openError = GetLastError();
+        check(d.ok(), L"open the control interface", d.ok() ? L""
+            : interfacePath().empty() ? L"no uConnect display device is running: is the driver installed (scripts\\dev-install.ps1)?"
+            : lastError(openError));
         if (!d.ok()) return 1;
         UCVDD_VERSION v{};
         check(d.version(v) && v.Major == UCVDD_PROTOCOL_MAJOR, L"protocol version",
