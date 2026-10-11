@@ -343,6 +343,11 @@ void LoadSettings() {
 static void DepartMonitors(const std::vector<IDDCX_MONITOR>& monitors)
 {
 	for (auto monitor : monitors) {
+		// Stop its swap-chain thread first: left running, it calls into a swap
+		// chain IddCx tears down with the monitor (an access violation in IddCx).
+		if (auto* wrapper = WdfObjectGet_IndirectMonitorContextWrapper(monitor); wrapper && wrapper->pContext) {
+			wrapper->pContext->BeginDeparture();
+		}
 		// The monitor context is deleted by WDF once the monitor object goes.
 		// A failure means the monitor is already gone (the device going away).
 		if (!NT_SUCCESS(IddCxMonitorDeparture(monitor))) {
@@ -904,7 +909,7 @@ IndirectMonitorContext::IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor) :
 
 IndirectMonitorContext::~IndirectMonitorContext()
 {
-	m_ProcessingThread.reset();
+	StopProcessing(true);
 	{
 		// Normally taken out of the list before departing; this covers WDF
 		// deleting the monitor on its own (the device going away).
@@ -920,9 +925,27 @@ IDDCX_MONITOR IndirectMonitorContext::GetMonitor() const {
 	return m_Monitor;
 }
 
-void IndirectMonitorContext::AssignSwapChain(const IDDCX_MONITOR& MonitorObject, const IDDCX_SWAPCHAIN& SwapChain, const LUID& RenderAdapter, const HANDLE& NewFrameEvent)
+void IndirectMonitorContext::StopProcessing(bool departing)
 {
-	m_ProcessingThread.reset();
+	std::unique_ptr<SwapChainProcessor> previous;
+	{
+		std::lock_guard<std::mutex> lg(m_ProcessingLock);
+		if (departing) {
+			m_Departing = true;
+		}
+		previous = std::move(m_ProcessingThread);
+	}
+	previous.reset();  // waits for the thread, outside the lock
+}
+
+void IndirectMonitorContext::BeginDeparture()
+{
+	StopProcessing(true);
+}
+
+bool IndirectMonitorContext::AssignSwapChain(const IDDCX_MONITOR& MonitorObject, const IDDCX_SWAPCHAIN& SwapChain, const LUID& RenderAdapter, const HANDLE& NewFrameEvent)
+{
+	StopProcessing(false);
 
 	auto Device = make_shared<Direct3DDevice>(RenderAdapter);
 	if (FAILED(Device->Init()))
@@ -930,11 +953,18 @@ void IndirectMonitorContext::AssignSwapChain(const IDDCX_MONITOR& MonitorObject,
 		// It's important to delete the swap-chain if D3D initialization fails, so that the OS knows to generate a new
 		// swap-chain and try again.
 		WdfObjectDelete(SwapChain);
-		return;
+		return true;
 	}
 
-	// Create a new swap-chain processing thread
-	m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent));
+	{
+		std::lock_guard<std::mutex> lg(m_ProcessingLock);
+		if (m_Departing) {
+			// Leaving: no new thread may start on a swap chain about to go.
+			return false;
+		}
+		// Create a new swap-chain processing thread
+		m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent));
+	}
 
 	// A hardware cursor keeps the pointer out of the frames; clients get it
 	// separately (desktop duplication reports it on its own).
@@ -944,7 +974,7 @@ void IndirectMonitorContext::AssignSwapChain(const IDDCX_MONITOR& MonitorObject,
 	}
 	if (!m_hCursorEvent.IsValid())
 	{
-		return;
+		return true;
 	}
 
 	IDDCX_CURSOR_CAPS cursorInfo = {};
@@ -961,14 +991,15 @@ void IndirectMonitorContext::AssignSwapChain(const IDDCX_MONITOR& MonitorObject,
 
 	if (!NT_SUCCESS(IddCxMonitorSetupHardwareCursor(MonitorObject, &hwCursor))) {
 		// Without it the OS draws the cursor into the frames, which still works.
-		return;
+		return true;
 	}
+	return true;
 }
 
 void IndirectMonitorContext::UnassignSwapChain()
 {
 	// Stop processing the last swap-chain
-	m_ProcessingThread.reset();
+	StopProcessing(false);
 }
 
 #pragma endregion
@@ -1189,7 +1220,9 @@ NTSTATUS UcVddMonitorAssignSwapChain(IDDCX_MONITOR MonitorObject, const IDARG_IN
 		preferredAdapterChanged = false;
 	}
 
-	pMonitorContextWrapper->pContext->AssignSwapChain(MonitorObject, pInArgs->hSwapChain, pInArgs->RenderAdapterLuid, pInArgs->hNextSurfaceAvailable);
+	if (!pMonitorContextWrapper->pContext->AssignSwapChain(MonitorObject, pInArgs->hSwapChain, pInArgs->RenderAdapterLuid, pInArgs->hNextSurfaceAvailable)) {
+		return STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN;  // the monitor is leaving
+	}
 	return STATUS_SUCCESS;
 }
 

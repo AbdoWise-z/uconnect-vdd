@@ -13,6 +13,7 @@
 #include <wrl.h>
 
 #include <memory>
+#include <mutex>
 #include <queue>
 
 #include "Trace.h"
@@ -94,13 +95,25 @@ namespace Microsoft
 			IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor);
 			virtual ~IndirectMonitorContext();
 
-			void AssignSwapChain(const IDDCX_MONITOR& MonitorObject, const IDDCX_SWAPCHAIN& SwapChain, const LUID& RenderAdapter, const HANDLE& NewFrameEvent);
+			// False when the monitor is departing: the swap chain is refused.
+			bool AssignSwapChain(const IDDCX_MONITOR& MonitorObject, const IDDCX_SWAPCHAIN& SwapChain, const LUID& RenderAdapter, const HANDLE& NewFrameEvent);
 			void UnassignSwapChain();
+			// Before IddCxMonitorDeparture: stops the swap-chain thread, so it
+			// cannot call into a swap chain IddCx is tearing down, and refuses
+			// new ones.
+			void BeginDeparture();
 
 			IDDCX_MONITOR GetMonitor() const;
 
 		private:
+			// Takes the processing thread out under the lock and lets it finish
+			// outside it: the thread's last act (deleting its swap chain) may
+			// call back into IddCx.
+			void StopProcessing(bool departing);
+
 			IDDCX_MONITOR m_Monitor;
+			std::mutex m_ProcessingLock;  // Assign/Unassign/departure come on different threads
+			bool m_Departing = false;
 			std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
 			Microsoft::WRL::Wrappers::Event m_hCursorEvent;
 		};
